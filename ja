@@ -1,0 +1,96 @@
+@Test
+public void testGbfBusinessLogic_NormalFlow() throws KafkaException {
+    // Arrange
+    List<6bfInput> messages = List.of(
+        new 6bfInput("TRANID123", "RFID001"),
+        new 6bfInput(null, "RFID002")
+    );
+    Calendar calendar = Calendar.getInstance();
+    SimpleDateFormat formatter = new SimpleDateFormat("dd-MM-yyyy HH:mm:ss");
+
+    CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
+    when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
+
+    // Mock the factory service
+    GbfFactoryService mockFactoryService = mock(GbfFactoryService.class);
+    when(gbfServiceFactory.getService(SERVICE_NM_GBF_TRAN)).thenReturn(mockFactoryService);
+
+    // Act
+    gbfServiceImpl.gbfBusinessLogic(messages);
+
+    // Assert
+    // Verify that commonService was called to prepare redis data
+    verify(commonService, times(1)).prepareCommonRedisData();
+
+    // Verify that the filtered messages were processed
+    verify(mockFactoryService, times(1)).processData(anyList(), eq(commonRedisResponse));
+
+    // Verify no exclusions are added to the producer in the normal flow
+    verify(kafkaMessageProducer, never()).produceToExclusionTopics(anyList());
+
+    // Log verification for start and finish messages
+    String startLogMessage = "6BF BusinessLogic reading data started. " + formatter.format(calendar.getTime());
+    String finishLogMessage = "6BF BusinessLogic reading data finished. " + formatter.format(calendar.getTime());
+    verify(logger).info(startLogMessage);
+    verify(logger).info(finishLogMessage);
+}
+
+@Test
+public void testGbfBusinessLogic_ExceptionFlow() throws KafkaException {
+    // Arrange
+    List<6bfInput> messages = List.of(
+        new 6bfInput("TRANID123", "RFID001"),
+        new 6bfInput(null, "RFID002")
+    );
+
+    CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
+    when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
+
+    // Mock the factory service to throw an exception
+    GbfFactoryService mockFactoryService = mock(GbfFactoryService.class);
+    when(gbfServiceFactory.getService(SERVICE_NM_GBF_TRAN)).thenReturn(mockFactoryService);
+    doThrow(new RuntimeException("Test exception")).when(mockFactoryService).processData(anyList(), eq(commonRedisResponse));
+
+    // Mock the exclusion service
+    List<Exclusion> mockExclusions = List.of(new Exclusion("Exclusion1"), new Exclusion("Exclusion2"));
+    when(commonService.getAllGbfExclusions(anyList(), eq(commonRedisResponse), anyString())).thenReturn(mockExclusions);
+
+    // Act
+    gbfServiceImpl.gbfBusinessLogic(messages);
+
+    // Assert
+    // Verify that commonService was called to prepare redis data
+    verify(commonService, times(1)).prepareCommonRedisData();
+
+    // Verify that the factory service was called and threw an exception
+    verify(mockFactoryService, times(1)).processData(anyList(), eq(commonRedisResponse));
+
+    // Verify that the exclusion logic was triggered
+    verify(commonService, times(1)).getAllGbfExclusions(anyList(), eq(commonRedisResponse), eq(MSG_TYPE_GBF));
+
+    // Verify that exclusions were sent to Kafka producer
+    verify(kafkaMessageProducer, times(1)).produceToExclusionTopics(mockExclusions);
+
+    // Verify error logs
+    verify(logger, times(1)).error(anyString(), any(Throwable.class));
+}
+
+@Test
+public void testGbfBusinessLogic_EmptyMessages() throws KafkaException {
+    // Arrange
+    List<6bfInput> messages = Collections.emptyList();
+    CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
+    when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
+
+    // Act
+    gbfServiceImpl.gbfBusinessLogic(messages);
+
+    // Assert
+    // Verify that no processing occurs when input is empty
+    verify(commonService, never()).prepareCommonRedisData();
+    verify(gbfServiceFactory, never()).getService(SERVICE_NM_GBF_TRAN);
+    verify(kafkaMessageProducer, never()).produceToExclusionTopics(anyList());
+
+    // Log verification for start and finish messages
+    verify(logger, times(1)).info("Input size: 0");
+}
