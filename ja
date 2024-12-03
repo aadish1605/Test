@@ -1,96 +1,115 @@
-@Test
-public void testGbfBusinessLogic_NormalFlow() throws KafkaException {
-    // Arrange
-    List<6bfInput> messages = List.of(
-        new 6bfInput("TRANID123", "RFID001"),
-        new 6bfInput(null, "RFID002")
-    );
-    Calendar calendar = Calendar.getInstance();
-    SimpleDateFormat formatter = new SimpleDateFormat("dd-MM-yyyy HH:mm:ss");
+@ExtendWith(MockitoExtension.class)
+public class GBFServiceImplTest {
 
-    CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
-    when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
+    @Mock
+    private CommonService commonService;
 
-    // Mock the factory service
-    GbfFactoryService mockFactoryService = mock(GbfFactoryService.class);
-    when(gbfServiceFactory.getService(SERVICE_NM_GBF_TRAN)).thenReturn(mockFactoryService);
+    @Mock
+    private KafkaMessageProducer kafkaMessageProducer;
 
-    // Act
-    gbfServiceImpl.gbfBusinessLogic(messages);
+    @Mock
+    private GbfServiceFactory gbfServiceFactory;
 
-    // Assert
-    // Verify that commonService was called to prepare redis data
-    verify(commonService, times(1)).prepareCommonRedisData();
+    @Mock
+    private GbfFactoryService factoryService;
 
-    // Verify that the filtered messages were processed
-    verify(mockFactoryService, times(1)).processData(anyList(), eq(commonRedisResponse));
+    @InjectMocks
+    private GBFServiceImpl gbfServiceImpl;
 
-    // Verify no exclusions are added to the producer in the normal flow
-    verify(kafkaMessageProducer, never()).produceToExclusionTopics(anyList());
+    @Test
+    public void testGbfBusinessLogicWithValidMessages() throws KafkaException {
+        // Arrange
+        List<GBFInput> messages = List.of(
+            new GBFInput(123L, "RFID1"), // Example GBFInput with non-null GBF_TRAN_ID
+            new GBFInput(456L, "RFID2")
+        );
 
-    // Log verification for start and finish messages
-    String startLogMessage = "6BF BusinessLogic reading data started. " + formatter.format(calendar.getTime());
-    String finishLogMessage = "6BF BusinessLogic reading data finished. " + formatter.format(calendar.getTime());
-    verify(logger).info(startLogMessage);
-    verify(logger).info(finishLogMessage);
-}
+        CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
+        when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
+        when(gbfServiceFactory.getService("SERVICE_NM_GBF_TRAN")).thenReturn(factoryService);
 
-@Test
-public void testGbfBusinessLogic_ExceptionFlow() throws KafkaException {
-    // Arrange
-    List<6bfInput> messages = List.of(
-        new 6bfInput("TRANID123", "RFID001"),
-        new 6bfInput(null, "RFID002")
-    );
+        // Act
+        gbfServiceImpl.gbfBusinessLogic(messages);
 
-    CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
-    when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
+        // Assert
+        verify(commonService).prepareCommonRedisData();
+        verify(factoryService).processData(
+            argThat(arg -> arg.size() == 2), // Ensure both valid messages are processed
+            eq(commonRedisResponse)
+        );
+        verify(kafkaMessageProducer, never()).produceToExclusionTopics(anyList());
+    }
 
-    // Mock the factory service to throw an exception
-    GbfFactoryService mockFactoryService = mock(GbfFactoryService.class);
-    when(gbfServiceFactory.getService(SERVICE_NM_GBF_TRAN)).thenReturn(mockFactoryService);
-    doThrow(new RuntimeException("Test exception")).when(mockFactoryService).processData(anyList(), eq(commonRedisResponse));
+    @Test
+    public void testGbfBusinessLogicWithEmptyMessages() throws KafkaException {
+        // Arrange
+        List<GBFInput> messages = Collections.emptyList();
 
-    // Mock the exclusion service
-    List<Exclusion> mockExclusions = List.of(new Exclusion("Exclusion1"), new Exclusion("Exclusion2"));
-    when(commonService.getAllGbfExclusions(anyList(), eq(commonRedisResponse), anyString())).thenReturn(mockExclusions);
+        // Act
+        gbfServiceImpl.gbfBusinessLogic(messages);
 
-    // Act
-    gbfServiceImpl.gbfBusinessLogic(messages);
+        // Assert
+        verify(commonService, never()).prepareCommonRedisData();
+        verify(factoryService, never()).processData(anyList(), any());
+        verify(kafkaMessageProducer, never()).produceToExclusionTopics(anyList());
+    }
 
-    // Assert
-    // Verify that commonService was called to prepare redis data
-    verify(commonService, times(1)).prepareCommonRedisData();
+    @Test
+    public void testGbfBusinessLogicWithException() throws KafkaException {
+        // Arrange
+        List<GBFInput> messages = List.of(
+            new GBFInput(123L, "RFID1"),
+            new GBFInput(null, "RFID2") // This will cause an exception
+        );
 
-    // Verify that the factory service was called and threw an exception
-    verify(mockFactoryService, times(1)).processData(anyList(), eq(commonRedisResponse));
+        CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
+        when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
+        when(gbfServiceFactory.getService("SERVICE_NM_GBF_TRAN")).thenReturn(factoryService);
 
-    // Verify that the exclusion logic was triggered
-    verify(commonService, times(1)).getAllGbfExclusions(anyList(), eq(commonRedisResponse), eq(MSG_TYPE_GBF));
+        doThrow(new RuntimeException("Test Exception"))
+            .when(factoryService).processData(anyList(), eq(commonRedisResponse));
 
-    // Verify that exclusions were sent to Kafka producer
-    verify(kafkaMessageProducer, times(1)).produceToExclusionTopics(mockExclusions);
+        when(commonService.getAllGBFExclusions(anyList(), eq(commonRedisResponse), eq("MSG_TYPE_GBF")))
+            .thenReturn(List.of(new Exclusion("Exclusion1")));
 
-    // Verify error logs
-    verify(logger, times(1)).error(anyString(), any(Throwable.class));
-}
+        // Act
+        gbfServiceImpl.gbfBusinessLogic(messages);
 
-@Test
-public void testGbfBusinessLogic_EmptyMessages() throws KafkaException {
-    // Arrange
-    List<6bfInput> messages = Collections.emptyList();
-    CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
-    when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
+        // Assert
+        verify(commonService).prepareCommonRedisData();
+        verify(factoryService).processData(
+            argThat(arg -> arg.size() == 1), // Only valid GBF_TRAN_ID message should be processed
+            eq(commonRedisResponse)
+        );
+        verify(kafkaMessageProducer).produceToExclusionTopics(
+            argThat(arg -> arg.size() == 1 && arg.get(0).getExclusionReason().equals("Exclusion1"))
+        );
+    }
 
-    // Act
-    gbfServiceImpl.gbfBusinessLogic(messages);
+    @Test
+    public void testGbfBusinessLogicWithAllExclusions() throws KafkaException {
+        // Arrange
+        List<GBFInput> messages = List.of(
+            new GBFInput(null, "RFID1"), // Both messages have null GBF_TRAN_ID, leading to exclusions
+            new GBFInput(null, "RFID2")
+        );
 
-    // Assert
-    // Verify that no processing occurs when input is empty
-    verify(commonService, never()).prepareCommonRedisData();
-    verify(gbfServiceFactory, never()).getService(SERVICE_NM_GBF_TRAN);
-    verify(kafkaMessageProducer, never()).produceToExclusionTopics(anyList());
+        CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
+        when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
 
-    // Log verification for start and finish messages
-    verify(logger, times(1)).info("Input size: 0");
+        when(commonService.getAllGBFExclusions(anyList(), eq(commonRedisResponse), eq("MSG_TYPE_GBF")))
+            .thenReturn(List.of(
+                new Exclusion("Exclusion1"),
+                new Exclusion("Exclusion2")
+            ));
+
+        // Act
+        gbfServiceImpl.gbfBusinessLogic(messages);
+
+        // Assert
+        verify(factoryService, never()).processData(anyList(), any());
+        verify(kafkaMessageProducer).produceToExclusionTopics(
+            argThat(arg -> arg.size() == 2) // Two exclusions should be sent to Kafka
+        );
+    }
 }
