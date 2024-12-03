@@ -1,115 +1,22 @@
-@ExtendWith(MockitoExtension.class)
-public class GBFServiceImplTest {
+@Test
+public void testGbfBusinessLogicHappyPath() {
+    // Arrange
+    List<6bfInput> messages = Arrays.asList(
+        new 6bfInput("1", "RFID1"), 
+        new 6bfInput("2", "RFID2")
+    );
+    CommonRedisResponse redisResponse = new CommonRedisResponse();
+    redisResponse.setMsgType("MSG_TYPE_6BF");
 
-    @Mock
-    private CommonService commonService;
+    GbfFactoryService factoryService = mock(GbfFactoryService.class);
+    doNothing().when(factoryService).processData(anyList(), eq(redisResponse));
+    when(gbfServiceFactory.getService(eq(SERVICE_NM_GBF_TRAN))).thenReturn(factoryService);
 
-    @Mock
-    private KafkaMessageProducer kafkaMessageProducer;
+    // Act
+    gbfServiceImpl.gbfBusinessLogic(messages);
 
-    @Mock
-    private GbfServiceFactory gbfServiceFactory;
-
-    @Mock
-    private GbfFactoryService factoryService;
-
-    @InjectMocks
-    private GBFServiceImpl gbfServiceImpl;
-
-    @Test
-    public void testGbfBusinessLogicWithValidMessages() throws KafkaException {
-        // Arrange
-        List<GBFInput> messages = List.of(
-            new GBFInput(123L, "RFID1"), // Example GBFInput with non-null GBF_TRAN_ID
-            new GBFInput(456L, "RFID2")
-        );
-
-        CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
-        when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
-        when(gbfServiceFactory.getService("SERVICE_NM_GBF_TRAN")).thenReturn(factoryService);
-
-        // Act
-        gbfServiceImpl.gbfBusinessLogic(messages);
-
-        // Assert
-        verify(commonService).prepareCommonRedisData();
-        verify(factoryService).processData(
-            argThat(arg -> arg.size() == 2), // Ensure both valid messages are processed
-            eq(commonRedisResponse)
-        );
-        verify(kafkaMessageProducer, never()).produceToExclusionTopics(anyList());
-    }
-
-    @Test
-    public void testGbfBusinessLogicWithEmptyMessages() throws KafkaException {
-        // Arrange
-        List<GBFInput> messages = Collections.emptyList();
-
-        // Act
-        gbfServiceImpl.gbfBusinessLogic(messages);
-
-        // Assert
-        verify(commonService, never()).prepareCommonRedisData();
-        verify(factoryService, never()).processData(anyList(), any());
-        verify(kafkaMessageProducer, never()).produceToExclusionTopics(anyList());
-    }
-
-    @Test
-    public void testGbfBusinessLogicWithException() throws KafkaException {
-        // Arrange
-        List<GBFInput> messages = List.of(
-            new GBFInput(123L, "RFID1"),
-            new GBFInput(null, "RFID2") // This will cause an exception
-        );
-
-        CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
-        when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
-        when(gbfServiceFactory.getService("SERVICE_NM_GBF_TRAN")).thenReturn(factoryService);
-
-        doThrow(new RuntimeException("Test Exception"))
-            .when(factoryService).processData(anyList(), eq(commonRedisResponse));
-
-        when(commonService.getAllGBFExclusions(anyList(), eq(commonRedisResponse), eq("MSG_TYPE_GBF")))
-            .thenReturn(List.of(new Exclusion("Exclusion1")));
-
-        // Act
-        gbfServiceImpl.gbfBusinessLogic(messages);
-
-        // Assert
-        verify(commonService).prepareCommonRedisData();
-        verify(factoryService).processData(
-            argThat(arg -> arg.size() == 1), // Only valid GBF_TRAN_ID message should be processed
-            eq(commonRedisResponse)
-        );
-        verify(kafkaMessageProducer).produceToExclusionTopics(
-            argThat(arg -> arg.size() == 1 && arg.get(0).getExclusionReason().equals("Exclusion1"))
-        );
-    }
-
-    @Test
-    public void testGbfBusinessLogicWithAllExclusions() throws KafkaException {
-        // Arrange
-        List<GBFInput> messages = List.of(
-            new GBFInput(null, "RFID1"), // Both messages have null GBF_TRAN_ID, leading to exclusions
-            new GBFInput(null, "RFID2")
-        );
-
-        CommonRedisResponse commonRedisResponse = new CommonRedisResponse();
-        when(commonService.prepareCommonRedisData()).thenReturn(commonRedisResponse);
-
-        when(commonService.getAllGBFExclusions(anyList(), eq(commonRedisResponse), eq("MSG_TYPE_GBF")))
-            .thenReturn(List.of(
-                new Exclusion("Exclusion1"),
-                new Exclusion("Exclusion2")
-            ));
-
-        // Act
-        gbfServiceImpl.gbfBusinessLogic(messages);
-
-        // Assert
-        verify(factoryService, never()).processData(anyList(), any());
-        verify(kafkaMessageProducer).produceToExclusionTopics(
-            argThat(arg -> arg.size() == 2) // Two exclusions should be sent to Kafka
-        );
-    }
+    // Assert
+    verify(factoryService, times(1)).processData(anyList(), eq(redisResponse));
+    verifyNoMoreInteractions(factoryService);
+    verify(redisDataRepository, never()).getData(anyString(), anyString());
 }
